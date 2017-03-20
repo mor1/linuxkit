@@ -14,3 +14,4 @@ disk.img.*
 *.qcow2
 *-bzImage
 *-cmdline
+.docker
