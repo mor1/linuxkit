@@ -28,3 +28,54 @@ adjust the kernel config on some systems. Specifically:
  CONFIG_SCHED_MC=y
  # CONFIG_PREEMPT_NONE is not set
 ```
+
+## Notes
+
+Current kernel build workflow is:
+  * `make -C base/alpine-build-kernel` to build the Alpine builder image
+      * Default is `mobylinux/alpine-build-kernel`
+      * I've pushed `mor1/alpine-build-kernel-arm64`, a Debian builder for ARM64
+  * `make -C kernel kernel.tag` to build the kernel continer
+      * Uses `tar` to pass through the necessary kernel patchsets and config
+        files to invoke the build.
+  * `make -C kernel bzImage` to invoke `tar` to extract contents from kernel
+    container
+  * `make -C kernel image` to build container containing built kernel
+  * `make -C kernel push` to push it
+
+We need to support multiple kernel versions (patched and vanilla) as well as
+multiple architectures (x86_64 and ARM64 to start).
+
+For kernel build, we (will) need to specify
+  * `ARCH`
+      * `arm64` or `x86_64` (default)
+  * `KERNEL_VERSION` deriving `IMAGE_VERSION` and `IMAGE_MAJOR_VERSION`
+      * `4.4` or `4.9` (default)
+  * `DEBUG`
+      * `1` or `0` (default)
+  * `PATCHED`
+      * Not currently supported
+
+These need to be plumbed through to give us:
+  * Kernel builder base container
+      * Specify `Dockerfile` in `base/alpine-build-kernel`
+      * Publish to alternative tag (?)
+  * Kernel configurations, composed of parts
+      * Common
+      * Common debug-only
+      * Version specific
+      * Architecture specific
+      * Moby patchsets
+  * Target-specific kernel build container
+      * Need to pass through different `DEPS` in `kernel/Makefile`
+
+Questions:
+  * Better to setup cross-compile rather than rely on QEMU,
+    per <https://github.com/mor1/xen-arm-builder/blob/master/linux.sh>?
+  * Easier to put each `Dockerfile` in own subdir
+      * Eg., `$(ARCH)/$(IMAGE_VERSION)` with patches split by `IMAGE_VERSION`?
+  * Relationship between `KERNEL_VERSION`, `IMAGE_VERSION` and `PATCHED`?
+  * To build kernel builder, flip tag in `FROM` vs use separate
+    `Dockerfile`/`Dockerfile.arm64`?
+  * How many kernel versions and patchsets will we ever want live at once?
+  * Can we overload image tags until we have multiarch support?
