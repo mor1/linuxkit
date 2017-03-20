@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -e
+
+INPUT=$1
+TMPFILE=$1.srted
+
+rm -f $TMPFILE
+sort $INPUT | grep -Ev "^[:space:]*$|^#.*$" > $TMPFILE
+mv $TMPFILE $INPUT
