@@ -18,34 +18,42 @@ all:	bzImage tag
 # frequently.
 #
 # IMAGE_VERSION is used to determine if a new image should be pushed to hub.
+
+ORG=mor1
+ARCH=arm64
+
 ifeq ($(KERNEL),v4.4)
-KERNEL_VERSION=4.4.55
-IMAGE_VERSION=$(KERNEL_VERSION)-1
-IMAGE_MAJOR_VERSION=4.4.x
-DEPS=Dockerfile.4.4 Makefile kernel_config kernel_config.debug kernel_config.4.4 patches-4.4
+  KERNEL_VERSION=4.4.55
+  IMAGE_VERSION=$(KERNEL_VERSION)-1
+  IMAGE_MAJOR_VERSION=4.4.x
+  DEPS=Dockerfile.4.4 Makefile kernel_config kernel_config.4.4 patches-4.4
 else
-ifeq ($(KERNEL),v4.10)
-KERNEL_VERSION=4.10.4
-IMAGE_VERSION=$(KERNEL_VERSION)-0
-IMAGE_MAJOR_VERSION=4.10.x
-DEPS=Dockerfile.4.10 Makefile kernel_config kernel_config.debug patches-4.10
-else
-KERNEL_VERSION=4.9.16
-IMAGE_VERSION=$(KERNEL_VERSION)-1
-IMAGE_MAJOR_VERSION=4.9.x
-DEPS=Dockerfile Makefile kernel_config kernel_config.debug patches-4.9
+  ifeq ($(KERNEL),v4.10)
+    KERNEL_VERSION=4.10.4
+    IMAGE_VERSION=$(KERNEL_VERSION)-0
+    IMAGE_MAJOR_VERSION=4.10.x
+    DEPS=Dockerfile.4.10 Makefile kernel_config patches-4.10
+  else
+    KERNEL_VERSION=4.9.16
+    IMAGE_VERSION=$(KERNEL_VERSION)-1
+    IMAGE_MAJOR_VERSION=4.9.x
+    DEPS=Dockerfile Makefile kernel_config patches-4.9
+  endif
 endif
+
+ifeq ($(DEBUG),1)
+  DEPS += kernel_config.debug
 endif
 
 kernel.tag: $(DEPS)
-	BUILD=$$( tar cf - $^ | docker build -f $< --build-arg DEBUG=$(DEBUG) --build-arg KERNEL_VERSION=$(KERNEL_VERSION) -q - ) && [ -n "$$BUILD" ] && echo "Built $$BUILD" && echo "$$BUILD" > $@
+	BUILD=$$( tar cf - $^ | docker build -f $< --build-arg ARCH=$(ARCH) --build-arg DEBUG=$(DEBUG) --build-arg KERNEL_VERSION=$(KERNEL_VERSION) -q - ) && [ -n "$$BUILD" ] && echo "Built $$BUILD" && echo "$$BUILD" > $@
 
 bzImage: kernel.tag
 	rm -rf etc/kernel-patches
-	mkdir -p x86_64 etc lib usr sbin etc/kernel-patches
-	docker run --rm --net=none --log-driver=none $(shell cat kernel.tag) tar cf - bzImage kernel-dev.tar kernel-headers.tar vmlinux kernel-modules.tar | tar xf - -C x86_64
-	cp x86_64/kernel-modules.tar kernel.tar
-	cp x86_64/bzImage $@
+	mkdir -p $(ARCH) etc lib usr sbin etc/kernel-patches
+	docker run --rm --net=none --log-driver=none $(shell cat kernel.tag) tar cf - bzImage kernel-dev.tar kernel-headers.tar vmlinux kernel-modules.tar | tar xf - -C $(ARCH)
+	cp $(ARCH)/kernel-modules.tar kernel.tar
+	cp $(ARCH)/bzImage $@
 
 .PHONY: image push tag
 
@@ -63,22 +71,22 @@ image: Dockerfile.media bzImage kernel.tar $(DEPS)
 	tar cf - $^ | docker build --no-cache -t $(IMAGE):build -f Dockerfile.media -
 
 push: image
-	docker pull mobylinux/$(IMAGE):$(IMAGE_VERSION) || \
-		(docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
-		 docker push mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
-		 docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION) && \
-		 docker push mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION))
+	docker pull $(ORG)/$(IMAGE):$(IMAGE_VERSION) || \
+		(docker tag $(IMAGE):build $(ORG)/$(IMAGE):$(IMAGE_VERSION) && \
+		 docker push $(ORG)/$(IMAGE):$(IMAGE_VERSION) && \
+		 docker tag $(IMAGE):build $(ORG)/$(IMAGE):$(IMAGE_MAJOR_VERSION) && \
+		 docker push $(ORG)/$(IMAGE):$(IMAGE_MAJOR_VERSION))
 	docker rmi $(IMAGE):build
 	rm -f hash
 
 tag: image
-	(docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
-	docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION))
+	(docker tag $(IMAGE):build $(ORG)/$(IMAGE):$(IMAGE_VERSION) && \
+	docker tag $(IMAGE):build $(ORG)/$(IMAGE):$(IMAGE_MAJOR_VERSION))
 	docker rmi $(IMAGE):build
 	rm -f hash
 
 .PHONY: clean
 clean:
-	rm -rf x86_64 lib usr sbin kernel.tag Dockerfile.media bzImage kernel.tar
+	rm -rf $(ARCH) lib usr sbin kernel.tag Dockerfile.media bzImage kernel.tar
 
 .DELETE_ON_ERROR:
