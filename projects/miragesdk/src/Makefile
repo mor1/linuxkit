@@ -1,11 +1,13 @@
 BASE=ocaml/opam:alpine-3.5_ocaml-4.04.0
-FILES=src/main.ml src/inflator.ml src/io_fs.ml src/_tags
+FILES=$(shell find . -name jbuild) \
+	$(shell find sdk/ -regex '.*\.mli?') \
+	dhcp-client/bpf/dhcp.c dhcp-client/main.ml
 IMAGE=dhcp-client
 OBJS=obj/dhcp-client
 
 MIRAGE_COMPILE=mobylinux/mirage-compile:f903b0e1b4328271364cc63f123ac49d56739cef@sha256:a54d9ca84d3f5998dba92ce83d60d49289cee8908a8b0f6ec280d30ab8edf46c
 CALF_OBJS=obj/dhcp-client-calf
-CALF_FILES=calf/config.ml calf/unikernel.ml
+CALF_FILES=dhcp-client/calf/config.ml dhcp-client/calf/unikernel.ml
 
 default: push
 	@
@@ -63,9 +65,18 @@ clean::
 	(docker rmi -f $(IMAGE):pkg || echo ok)
 	(docker rmi -f $(IMAGE):dev || echo ok)
 
+#### DEV
+
+.PHONY: test
+
+test:
+	jbuilder runtest --dev
+
+dev-clean:
+	rm -rf _build dhcp-client/calf/_build
+
 dev:
-	cd calf && mirage configure && make
-	ocamlbuild -use-ocamlfind -lflags -cclib,-static src/main.native
-	sudo ./_build/src/main.native -vv --cmd 'calf/_build/main.native -l debug --store 10 --net 12'
+	cd dhcp-client/calf && mirage configure && make
+	jbuilder build dhcp-client/main.exe --dev
 
 .DELETE_ON_ERROR:
