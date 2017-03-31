@@ -6,8 +6,11 @@ GO_COMPILE=mobylinux/go-compile:3afebc59c5cde31024493c3f91e6102d584a30b9@sha256:
 
 MOBY_DEPS=$(wildcard src/cmd/moby/*.go)
 GOOS=$(shell uname -s | tr '[:upper:]' '[:lower:]')
-GOARCH=amd64
+GOARCH=aarch64
 ifneq ($(GOOS),linux)
+CROSS=-e GOOS=$(GOOS) -e GOARCH=$(GOARCH)
+endif
+ifneq ($(GOARCH),amd64)
 CROSS=-e GOOS=$(GOOS) -e GOARCH=$(GOARCH)
 endif
 ifeq ($(GOOS),darwin)
