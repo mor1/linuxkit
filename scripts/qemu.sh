@@ -1,6 +1,6 @@
 #!/bin/sh
 
-QEMU_IMAGE=mobylinux/qemu:75ef01c780850daf78ee45078606eb740a999edf@sha256:ec93951816b57d86f7a90c129a5580e083093e5a92263d0d2be6822daa2162dd
+QEMU_IMAGE=linuxkit/qemu:4563d58e97958f4941fbef9e74cabc08bd402144@sha256:b2db0b13ba1cbb6b48218f088fe0a4d860e1db2c4c6381b5416536f48a612230
 
 # if not interactive
 if [ ! -t 0 -a -z "$1" ]
@@ -28,6 +28,10 @@ if [ ! -z "$FILE2" ]
 then
 	echo "$FILE2" | grep -q '^/' || FILE2="$PWD/$FILE2"
 fi
+if [ ! -z "$CMDLINE" ]
+then
+	echo "$CMDLINE" | grep -q '^/' || CMDLINE="$PWD/$CMDLINE"
+fi
 
 if [ -c "/dev/kvm" ] ; then
     DEVKVM="--device=/dev/kvm"
@@ -35,5 +39,9 @@ fi
 BASE=$(basename "$FILE")
 MOUNTS="-v $FILE:/tmp/$BASE"
 BASE2=$(basename "$FILE2")
+BASE3=$(basename "$CMDLINE")
+
 [ ! -z "$FILE2" ] && MOUNTS="$MOUNTS -v $FILE2:/tmp/$BASE2"
-docker run -it --rm $MOUNTS $DEVKVM "$QEMU_IMAGE" $CMDLINE
+[ ! -z "$CMDLINE" ] && MOUNTS="$MOUNTS -v $CMDLINE:/tmp/$BASE3"
+
+docker run -it --rm $MOUNTS $DEVKVM "$QEMU_IMAGE"

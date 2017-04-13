@@ -1,13 +1,25 @@
 (** IO helpers *)
 
-val really_write: Lwt_unix.file_descr -> string -> int -> int -> unit Lwt.t
-(** [really_write fd buf off len] writes exactly [len] bytes to [fd]. *)
+type t
+(** The type for IO flows *)
 
-val really_read: Lwt_unix.file_descr -> string -> int -> int -> unit Lwt.t
-(** [really_read fd buf off len] reads exactly [len] bytes from [fd]. *)
+include Mirage_flow_lwt.S with type flow = t
 
-val read_all: Lwt_unix.file_descr -> string Lwt.t
-(** [read_all fd] reads as much data as it is available in [fd]. *)
+val create: (module Mirage_flow_lwt.S with type flow = 'a) -> 'a -> string -> flow
+(** [create (module M) t name] is the flow representing [t] using the
+    function defined in [M]. *)
 
-val read_n: Lwt_unix.file_descr -> int -> string Lwt.t
-(** [read_n fd n] reads exactly [n] bytes from [fd]. *)
+val pp: flow Fmt.t
+(** [pp] is the pretty-printer for IO flows. *)
+
+val forward: ?verbose:bool -> src:t -> dst:t -> unit Lwt.t
+(** [forward ?verbose ~src ~dst] forwards writes from [src] to
+    [dst]. Block until either [src] or [dst] is closed. If [verbose]
+    is set (by default it is not), show the raw flow in debug mode,
+    otherwise just show the lenght. *)
+
+val proxy: ?verbose:bool -> t -> t -> unit Lwt.t
+(** [proxy ?verbose x y] is the same as [forward x y <*> forward y
+    x]. Block until both flows are closed. If [verbose] is set (by
+    default it is not), show the raw flow in debug mode, otherwise
+    just show the lenght. *)

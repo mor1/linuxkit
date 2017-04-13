@@ -1,5 +1,3 @@
-// +build darwin
-
 // Package hyperkit provides a Go wrapper around the hyperkit
 // command. It currently shells out to start hyperkit with the
 // provided configuration.
@@ -33,12 +31,12 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/mitchellh/go-ps"
-	"github.com/rneugeba/iso9660wrap"
 )
 
 const (
@@ -71,10 +69,16 @@ type HyperKit struct {
 	StateDir string `json:"state_dir"`
 	// VPNKitSock is the location of the VPNKit socket used for networking.
 	VPNKitSock string `json:"vpnkit_sock"`
+	// VPNKitKey is a string containing a UUID, it can be used in conjunction with VPNKit to get consistent IP address.
+	VPNKitKey string `json:"vpnkit_key"`
+	// UUID is a string containing a UUID, it sets BIOS DMI UUID for the VM (as found in /sys/class/dmi/id/product_uuid on Linux).
+	UUID string `json:"uuid"`
 	// DiskImage is the path to the disk image to use
 	DiskImage string `json:"disk"`
 	// ISOImage is the (optional) path to a ISO image to attach
 	ISOImage string `json:"iso"`
+	// VSock enables the virtio-socket device and exposes it on the host
+	VSock bool `json:"vsock"`
 
 	// Kernel is the path to the kernel image to boot
 	Kernel string `json:"kernel"`
@@ -91,10 +95,6 @@ type HyperKit struct {
 	// Console defines where the console of the VM should be
 	// connected to. ConsoleStdio and ConsoleFile are supported.
 	Console int `json:"console"`
-
-	// UserData, if non empty, will be added to a ISO under the
-	// filename `config` and passed to the VM.
-	UserData string `json:"user_data"`
 
 	// Below here are internal members, but they are exported so
 	// that they are written to the state json file, if configured.
@@ -116,7 +116,7 @@ type HyperKit struct {
 // - If vpnkitsock is empty no networking is configured. If it is set
 //   to "auto" it tries to re-use the Docker for Mac VPNKit connection.
 // - If statedir is "" no state is written to disk.
-func New(hyperkit, statedir, vpnkitsock, diskimage string) (*HyperKit, error) {
+func New(hyperkit, vpnkitsock, statedir string) (*HyperKit, error) {
 	h := HyperKit{}
 	var err error
 
@@ -129,13 +129,11 @@ func New(hyperkit, statedir, vpnkitsock, diskimage string) (*HyperKit, error) {
 	if err != nil {
 		return nil, err
 	}
-	h.DiskImage = diskimage
 
 	h.CPUs = defaultCPUs
 	h.Memory = defaultMemory
 
 	h.Console = ConsoleStdio
-	h.UserData = ""
 
 	return &h, nil
 }
@@ -144,12 +142,12 @@ func New(hyperkit, statedir, vpnkitsock, diskimage string) (*HyperKit, error) {
 func FromState(statedir string) (*HyperKit, error) {
 	b, err := ioutil.ReadFile(filepath.Join(statedir, jsonFile))
 	if err != nil {
-		return nil, fmt.Errorf("Can't read json file: ", err)
+		return nil, fmt.Errorf("Can't read json file: %s", err)
 	}
 	h := &HyperKit{}
 	err = json.Unmarshal(b, h)
 	if err != nil {
-		return nil, fmt.Errorf("Can't parse json file: ", err)
+		return nil, fmt.Errorf("Can't parse json file: %s", err)
 	}
 
 	// Make sure the pid written by hyperkit is the same as in the json
@@ -195,18 +193,15 @@ func (h *HyperKit) execute(cmdline string) error {
 	var err error
 	// Sanity checks on configuration
 	if h.Console == ConsoleFile && h.StateDir == "" {
-		return fmt.Errorf("If ConsoleFile is set, StateDir was be specified")
-	}
-	if h.UserData != "" && h.ISOImage != "" {
-		return fmt.Errorf("If UserData is supplied, ISOImage must not be set")
+		return fmt.Errorf("If ConsoleFile is set, StateDir must be specified")
 	}
 	if h.ISOImage != "" {
 		if _, err = os.Stat(h.ISOImage); os.IsNotExist(err) {
 			return fmt.Errorf("ISO %s does not exist", h.ISOImage)
 		}
 	}
-	if h.UserData != "" && h.StateDir == "" {
-		return fmt.Errorf("If UserData is supplied, StateDir was be specified")
+	if h.VSock && h.StateDir == "" {
+		return fmt.Errorf("If virtio-sockets are enabled, StateDir must be specified")
 	}
 	if _, err = os.Stat(h.Kernel); os.IsNotExist(err) {
 		return fmt.Errorf("Kernel %s does not exist", h.Kernel)
@@ -234,12 +229,6 @@ func (h *HyperKit) execute(cmdline string) error {
 			if err != nil {
 				return err
 			}
-		}
-	}
-	if h.UserData != "" {
-		h.ISOImage, err = createUserDataISO(h.StateDir, h.UserData)
-		if err != nil {
-			return err
 		}
 	}
 
@@ -326,6 +315,13 @@ func (h *HyperKit) String() string {
 
 // CreateDiskImage creates a empty file suitable for use as a disk image for a hyperkit VM.
 func CreateDiskImage(location string, sizeMB int) error {
+	diskDir := path.Dir(location)
+	if diskDir != "." {
+		if err := os.MkdirAll(diskDir, 0755); err != nil {
+			return err
+		}
+	}
+
 	f, err := os.Create(location)
 	if err != nil {
 		return err
@@ -350,10 +346,20 @@ func (h *HyperKit) buildArgs(cmdline string) {
 
 	a = append(a, "-s", "0:0,hostbridge")
 	if h.VPNKitSock != "" {
-		a = append(a, "-s", fmt.Sprintf("1:0,virtio-vpnkit,path=%s", h.VPNKitSock))
+		if h.VPNKitKey == "" {
+			a = append(a, "-s", fmt.Sprintf("1:0,virtio-vpnkit,path=%s", h.VPNKitSock))
+		} else {
+			a = append(a, "-s", fmt.Sprintf("1:0,virtio-vpnkit,path=%s,uuid=%s", h.VPNKitSock, h.VPNKitKey))
+		}
+	}
+	if h.UUID != "" {
+		a = append(a, "-U", h.UUID)
 	}
 	if h.DiskImage != "" {
 		a = append(a, "-s", fmt.Sprintf("2:0,virtio-blk,%s", h.DiskImage))
+	}
+	if h.VSock {
+		a = append(a, "-s", fmt.Sprintf("3,virtio-sock,guest_cid=3,path=%s", h.StateDir))
 	}
 	if h.ISOImage != "" {
 		a = append(a, "-s", fmt.Sprintf("4,ahci-cd,%s", h.ISOImage))
@@ -434,6 +440,9 @@ func (h *HyperKit) execHyperKit() error {
 		if err != nil {
 			return err
 		}
+	} else {
+		// Make sure we reap the child when it exits
+		go cmd.Wait()
 	}
 	return nil
 }
@@ -466,37 +475,12 @@ func stream(r io.ReadCloser, dest chan<- string) {
 	}()
 }
 
-// Create a ISO with Userdata in the specified directory
-func createUserDataISO(dir string, init string) (string, error) {
-	cfgName := filepath.Join(dir, "config")
-	isoName := cfgName + ".iso"
-
-	if err := ioutil.WriteFile(cfgName, []byte(init), 0644); err != nil {
-		return "", err
-	}
-
-	outfh, err := os.OpenFile(isoName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-	if err != nil {
-		return "", err
-	}
-	infh, err := os.Open(cfgName)
-	if err != nil {
-		return "", err
-	}
-	err = iso9660wrap.WriteFile(outfh, infh)
-	if err != nil {
-		return "", err
-	}
-
-	return isoName, nil
-}
-
 // checkHyperKit tries to find and/or validate the path of hyperkit
 func checkHyperKit(hyperkit string) (string, error) {
 	if hyperkit != "" {
 		p, err := exec.LookPath(hyperkit)
 		if err != nil {
-			return "", fmt.Errorf("Could not find hyperkit executable: ", hyperkit)
+			return "", fmt.Errorf("Could not find hyperkit executable %s: %s", hyperkit, err)
 		}
 		return p, nil
 	}

@@ -1,11 +1,9 @@
 open Lwt.Infix
 open Sdk
+open Astring
 
 let src = Logs.Src.create "dhcp-client" ~doc:"DHCP client"
 module Log = (val Logs.src_log src : Logs.LOG)
-
-let failf fmt = Fmt.kstrf Lwt.fail_with fmt
-
 
 module Handlers = struct
 
@@ -16,45 +14,88 @@ module Handlers = struct
     | `Updated (_, (_, `Contents (v, _))) -> Some v
     | _ -> None
 
-  let ip t =
+  let with_ip str f =
+    match Ipaddr.V4.of_string (String.trim str) with
+    | Some ip ->
+      Log.info (fun l -> l "SET IP to %a" Ipaddr.V4.pp_hum ip);
+      f ip
+    | None ->
+      Log.err (fun l -> l "%s is not a valid IP" str);
+      Lwt.return_unit
+
+  let ip ~ethif t =
     Ctl.KV.watch_key t ["ip"] (fun diff ->
         match contents_of_diff diff with
-        | Some ip ->
-          Log.info (fun l -> l "SET IP to %s" ip);
-          Lwt.return ()
-        | _ ->
-          Lwt.return ()
+        | None    -> Lwt.return_unit
+        | Some ip -> with_ip ip (fun ip -> Net.set_ip ethif ip)
       )
 
-  let handlers = [
-    ip;
+  let gateway t =
+    Ctl.KV.watch_key t ["gateway"] (fun diff ->
+        match contents_of_diff diff with
+        | None    -> Lwt.return_unit
+        | Some gw -> with_ip gw (fun gw -> Net.set_gateway gw)
+      )
+
+  let handlers ~ethif = [
+    ip ~ethif;
+    gateway;
   ]
 
-  let watch path =
-    Ctl.v path >>= fun db ->
-    Lwt_list.map_p (fun f -> f db) handlers >>= fun _ ->
+  let watch ~ethif db =
+    Lwt_list.map_p (fun f -> f db) (handlers ~ethif) >>= fun _ ->
     let t, _ = Lwt.task () in
     t
 
 end
 
-external bpf_filter: unit -> string = "bpf_filter"
+external dhcp_filter: unit -> string = "bpf_filter"
+
+let t = Init.Pipe.v ()
+
+(*
+let default_cmd = [
+  "/calf/dhcp-client-calf"; "--net=3"; "--ctl=4"; "-vv";
+]
+*)
+
+let default_cmd = [
+  "/usr/bin/runc"; "run"; "--preserve-fds"; "2"; "--bundle"; ".";  "calf"
+]
+
+let read_cmd file =
+  if Sys.file_exists file then
+    let ic = open_in_bin file in
+    let line = input_line ic in
+    String.cuts ~sep:" " line
+  else
+    failwith ("Cannot read " ^ file)
+
+let infof fmt =
+  Fmt.kstrf (fun msg () ->
+      let date = Int64.of_float (Unix.gettimeofday ()) in
+      Irmin.Info.v ~date ~author:"priv" msg
+    ) fmt
 
 let run () cmd ethif path =
+  let cmd = match cmd with
+    | None   -> default_cmd
+    | Some f -> read_cmd f
+  in
   Lwt_main.run (
-    let net = Init.rawlink ~filter:(bpf_filter ()) ethif in
     let routes = [
-      "/ip";
-      "/domain";
-      "/search";
-      "/mtu";
-      "/nameservers/*"
+      ["ip"]     , [`Write];
+      ["mac"]    , [`Read ];
+      ["gateway"], [`Write];
     ] in
-    Ctl.v "/data" >>= fun ctl ->
-    let fd = Init.(Fd.fd @@ Pipe.(priv ctl)) in
-    let ctl () = Ctl.serve ~routes ctl fd in
-    let handlers () = Handlers.watch path in
-    Init.run ~net ~ctl ~handlers cmd
+    Ctl.v path >>= fun db ->
+    let ctl fd = Ctl.Server.listen ~routes db fd in
+    let handlers () = Handlers.watch ~ethif db in
+    let net = Init.rawlink ~filter:(dhcp_filter ()) ethif in
+    Net.mac ethif >>= fun mac ->
+    let mac = Macaddr.to_string mac ^ "\n" in
+    Ctl.KV.set db ~info:(infof "Add mac") ["mac"] mac >>= fun () ->
+    Init.run t ~net ~ctl ~handlers cmd
   )
 
 (* CLI *)
@@ -73,24 +114,11 @@ let setup_log style_renderer level =
 let setup_log =
   Term.(const setup_log $ Fmt_cli.style_renderer () $ Logs_cli.level ())
 
-let ctl = string_of_int Init.(Fd.to_int Pipe.(calf ctl))
-let net = string_of_int Init.(Fd.to_int Pipe.(calf net))
-
 let cmd =
-  (* FIXME: use runc isolation
-   let default_cmd = [
-    "/usr/bin/runc"; "--"; "run";
-    "--bundle"; "/containers/images/000-dhcp-client";
-    "dhcp-client"
-  ] in
-  *)
-  let default_cmd = [
-    "/dhcp-client-calf"; "--ctl="^ctl; "--net="^net
-  ] in
   let doc =
     Arg.info ~docv:"CMD" ~doc:"Command to run the calf process." ["cmd"]
   in
-  Arg.(value & opt (list ~sep:' ' string) default_cmd & doc)
+  Arg.(value & opt (some string) None & doc)
 
 let ethif =
   let doc =

@@ -4,12 +4,19 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	log "github.com/Sirupsen/logrus"
 )
 
 var (
 	defaultLogFormatter = &log.TextFormatter{}
+
+	// Version is the human-readable version
+	Version = "unknown"
+
+	// GitCommit hash, set at compile time
+	GitCommit = "unknown"
 )
 
 // infoFormatter overrides the default format for Info() log events to
@@ -24,48 +31,28 @@ func (f *infoFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return defaultLogFormatter.Format(entry)
 }
 
+func version() {
+	fmt.Printf("%s version %s\n", filepath.Base(os.Args[0]), Version)
+	fmt.Printf("commit: %s\n", GitCommit)
+	os.Exit(0)
+}
+
 func main() {
 	flag.Usage = func() {
-		fmt.Printf("USAGE: %s [options] COMMAND\n\n", os.Args[0])
+		fmt.Printf("USAGE: %s [options] COMMAND\n\n", filepath.Base(os.Args[0]))
 		fmt.Printf("Commands:\n")
 		fmt.Printf("  build       Build a Moby image from a YAML file\n")
-		fmt.Printf("  run         Run a Moby image on a local hypervisor\n")
+		fmt.Printf("  run         Run a Moby image on a local hypervisor or remote cloud\n")
+		fmt.Printf("  version     Print version information\n")
 		fmt.Printf("  help        Print this message\n")
 		fmt.Printf("\n")
-		fmt.Printf("Run '%s COMMAND --help' for more information on the command\n", os.Args[0])
+		fmt.Printf("Run '%s COMMAND --help' for more information on the command\n", filepath.Base(os.Args[0]))
 		fmt.Printf("\n")
 		fmt.Printf("Options:\n")
 		flag.PrintDefaults()
 	}
 	flagQuiet := flag.Bool("q", false, "Quiet execution")
 	flagVerbose := flag.Bool("v", false, "Verbose execution")
-
-	buildCmd := flag.NewFlagSet("build", flag.ExitOnError)
-	buildCmd.Usage = func() {
-		fmt.Printf("USAGE: %s build [options] [file.yml]\n\n", os.Args[0])
-		fmt.Printf("'file.yml' defaults to 'moby.yml' if not specified.\n\n")
-		fmt.Printf("Options:\n")
-		buildCmd.PrintDefaults()
-	}
-	buildName := buildCmd.String("name", "", "Name to use for output files")
-	buildPull := buildCmd.Bool("pull", false, "Always pull images")
-
-	runCmd := flag.NewFlagSet("run", flag.ExitOnError)
-	runCmd.Usage = func() {
-		fmt.Printf("USAGE: %s run [options] [prefix]\n\n", os.Args[0])
-		fmt.Printf("'prefix' specifies the path to the VM image.\n")
-		fmt.Printf("It defaults to './moby'.\n")
-		fmt.Printf("\n")
-		fmt.Printf("Options:\n")
-		runCmd.PrintDefaults()
-		fmt.Printf("\n")
-		fmt.Printf("If 'data' is supplied or if 'background' is selected\n")
-		fmt.Printf("some per VM state is kept in a sub-directory in the ~/.moby\n")
-	}
-	runCPUs := runCmd.Int("cpus", 1, "Number of CPUs")
-	runMem := runCmd.Int("mem", 1024, "Amount of memory in MB")
-	runDiskSz := runCmd.Int("disk-size", 0, "Size of Disk in MB")
-	runDisk := runCmd.String("disk", "", "Path to disk image to used")
 
 	// Set up logging
 	log.SetFormatter(new(infoFormatter))
@@ -93,11 +80,11 @@ func main() {
 
 	switch args[0] {
 	case "build":
-		buildCmd.Parse(args[1:])
-		build(*buildName, *buildPull, buildCmd.Args())
+		build(args[1:])
 	case "run":
-		runCmd.Parse(args[1:])
-		run(*runCPUs, *runMem, *runDiskSz, *runDisk, runCmd.Args())
+		run(args[1:])
+	case "version":
+		version()
 	case "help":
 		flag.Usage()
 	default:

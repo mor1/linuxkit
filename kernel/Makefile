@@ -19,18 +19,18 @@ all:	bzImage tag
 #
 # IMAGE_VERSION is used to determine if a new image should be pushed to hub.
 ifeq ($(KERNEL),v4.4)
-KERNEL_VERSION=4.4.57
+KERNEL_VERSION=4.4.60
 IMAGE_VERSION=$(KERNEL_VERSION)-0
 IMAGE_MAJOR_VERSION=4.4.x
 DEPS=Dockerfile.4.4 Makefile kernel_config kernel_config.debug kernel_config.4.4 patches-4.4
 else
 ifeq ($(KERNEL),v4.10)
-KERNEL_VERSION=4.10.6
+KERNEL_VERSION=4.10.9
 IMAGE_VERSION=$(KERNEL_VERSION)-0
 IMAGE_MAJOR_VERSION=4.10.x
 DEPS=Dockerfile.4.10 Makefile kernel_config kernel_config.debug patches-4.10
 else
-KERNEL_VERSION=4.9.18
+KERNEL_VERSION=4.9.21
 IMAGE_VERSION=$(KERNEL_VERSION)-0
 IMAGE_MAJOR_VERSION=4.9.x
 DEPS=Dockerfile Makefile kernel_config kernel_config.debug patches-4.9
@@ -49,7 +49,7 @@ bzImage: kernel.tag
 
 .PHONY: image push tag
 
-MEDIA_TOYBOX=mobylinux/toybox-media:0a26fe5f574e444849983f9c4148ef74b3804d55@sha256:5ac38f77b66deb194c9016591b9b096e81fcdc9f7c3e6d01566294a6b4b4ebd2
+MEDIA_TOYBOX=linuxkit/toybox-media:d7e82a7d19ccc84c9071fa7a88ecaa58ae958f7c@sha256:4c7d25f2be2429cd08417c36e04161cb924e46f3e419ee33a0aa9ff3a0942e02
 
 BASE="$MEDIA_TOYBOX"
 IMAGE=kernel
@@ -68,6 +68,15 @@ push: image
 		 docker push mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
 		 docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION) && \
 		 docker push mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION))
+	docker rmi $(IMAGE):build
+	rm -f hash
+
+sign: image
+	DOCKER_CONTENT_TRUST=1 docker pull mobylinux/$(IMAGE):$(IMAGE_VERSION) || \
+		(docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
+		 DOCKER_CONTENT_TRUST=1 docker push mobylinux/$(IMAGE):$(IMAGE_VERSION) && \
+		 docker tag $(IMAGE):build mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION) && \
+		 DOCKER_CONTENT_TRUST=1 docker push mobylinux/$(IMAGE):$(IMAGE_MAJOR_VERSION))
 	docker rmi $(IMAGE):build
 	rm -f hash
 

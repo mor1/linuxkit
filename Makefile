@@ -1,10 +1,13 @@
 .PHONY: default all
-default: bin/moby moby-initrd.img
+default: bin/moby 
 all: default
 
-GO_COMPILE=mobylinux/go-compile:3afebc59c5cde31024493c3f91e6102d584a30b9@sha256:e0786141ea7df8ba5735b63f2a24b4ade9eae5a02b0e04c4fca33b425ec69b0a
+VERSION="0.0" # dummy for now
+GIT_COMMIT=$(shell git rev-list -1 HEAD)
 
-MOBY_DEPS=$(wildcard src/cmd/moby/*.go)
+GO_COMPILE=linuxkit/go-compile:4513068d9a7e919e4ec42e2d7ee879ff5b95b7f5@sha256:bdfadbe3e4ec699ca45b67453662321ec270f2d1a1dbdbf09625776d3ebd68c5
+
+MOBY?=bin/moby
 GOOS=$(shell uname -s | tr '[:upper:]' '[:lower:]')
 GOARCH=aarch64
 ifneq ($(GOOS),linux)
@@ -17,66 +20,54 @@ ifeq ($(GOOS),darwin)
 default: bin/infrakit-instance-hyperkit
 endif
 
+MOBY_DEPS=$(wildcard src/cmd/moby/*.go) Makefile vendor.conf
+MOBY_DEPS+=$(wildcard src/initrd/*.go) $(wildcard src/pad4/*.go)
 bin/moby: $(MOBY_DEPS) | bin
-	tar cf - vendor src/initrd src/pad4 -C src/cmd/moby . | docker run --rm --net=none --log-driver=none -i $(CROSS) $(GO_COMPILE) --package github.com/docker/moby -o $@ | tar xf -
+	tar cf - vendor src/initrd src/pad4 -C src/cmd/moby . | docker run --rm --net=none --log-driver=none -i $(CROSS) $(GO_COMPILE) --package github.com/docker/moby --ldflags "-X main.GitCommit=$(GIT_COMMIT) -X main.Version=$(VERSION)" -o $@ > tmp_moby_bin.tar
+	tar xf tmp_moby_bin.tar > $@
+	rm tmp_moby_bin.tar
 	touch $@
 
-MOBY_DEPS=$(wildcard src/cmd/infrakit-instance-hyperkit/*.go)
+INFRAKIT_DEPS=$(wildcard src/cmd/infrakit-instance-hyperkit/*.go) Makefile vendor.conf
 bin/infrakit-instance-hyperkit: $(INFRAKIT_DEPS) | bin
-	tar cf - vendor -C src/cmd/infrakit-instance-hyperkit . | docker run --rm --net=none --log-driver=none -i $(CROSS) $(GO_COMPILE) --package github.com/docker/moby -o $@ | tar xf -
+	tar cf - vendor -C src/cmd/infrakit-instance-hyperkit . | docker run --rm --net=none --log-driver=none -i $(CROSS) $(GO_COMPILE) --package github.com/docker/moby -o $@ > tmp_infrakit_instance_hyperkit_bin.tar
+	tar xf tmp_infrakit_instance_hyperkit_bin.tar > $@
+	rm tmp_infrakit_instance_hyperkit_bin.tar
 	touch $@
 
-moby-initrd.img: bin/moby moby.yml
-	bin/moby build moby.yml
-
-moby-bzImage: moby-initrd.img
-
-test-initrd.img: bin/moby test/test.yml
+test-initrd.img: $(MOBY) test/test.yml
 	bin/moby build test/test.yml
 
 test-bzImage: test-initrd.img
 
 # interactive versions need to use volume mounts
-.PHONY: qemu qemu-iso
-qemu: moby-initrd.img moby-bzImage moby-cmdline
-	./scripts/qemu.sh moby-initrd.img moby-bzImage "$(shell cat moby-cmdline)"
-
-qemu-iso: alpine/mobylinux-bios.iso
-	./scripts/qemu.sh $^
+.PHONY: test-qemu-efi
+test-qemu-efi: test-efi.iso
+	./scripts/qemu.sh $^ 2>&1 | tee test-efi.log
+	$(call check_test_log, test-efi.log)
 
 bin:
 	mkdir -p $@
-
-.PHONY: hyperkit
-hyperkit: bin/moby moby-initrd.img moby-bzImage moby.yml
-	bin/moby run moby
 
 define check_test_log
 	@cat $1 |grep -q 'Moby test suite PASSED'
 endef
 
-.PHONY: hyperkit-test
-hyperkit-test: bin/moby test-initrd.img test-bzImage test-cmdline
+.PHONY: test-hyperkit
+test-hyperkit: $(MOBY) test-initrd.img test-bzImage test-cmdline
 	rm -f disk.img
-	script -q /dev/null bin/moby run test | tee test.log
+	script -q /dev/null $(MOBY) run test | tee test.log
 	$(call check_test_log, test.log)
+
+.PHONY: test-gcp
+test-gcp: $(MOBY) test.img.tar.gz
+	script -q /dev/null $(MOBY) run gcp test.img.tar.gz | tee test-gcp.log
+	$(call check_test_log, test-gcp.log)
 
 .PHONY: test
 test: test-initrd.img test-bzImage test-cmdline
 	tar cf - $^ | ./scripts/qemu.sh 2>&1 | tee test.log
 	$(call check_test_log, test.log)
-
-.PHONY: ebpf
-EBPF_TAG=ebpf/ebpf.tag
-EBPF_IMAGE=mobylinux/ebpf:$(MEDIA_PREFIX)$(TAG)
-ebpf: alpine/initrd.img kernel/x86_64/vmlinuz64
-ifeq ($(STATUS),)
-	[ -f $(EBPF_TAG) ]
-	docker tag $(shell cat $(EBPF_TAG)) $(EBPF_IMAGE)
-	docker push $(EBPF_IMAGE)
-else
-	$(error "git not clean")
-endif
 
 .PHONY: ci ci-tag ci-pr
 ci:
@@ -96,4 +87,4 @@ ci-pr:
 
 .PHONY: clean
 clean:
-	rm -rf bin disk.img test.log *-initrd.img *-bzImage *-cmdline *.iso *.tar.gz *.qcow2 *.vhd
+	rm -rf bin *.log *-bzImage *-cmdline *.img *.iso *.tar.gz *.qcow2 *.vhd

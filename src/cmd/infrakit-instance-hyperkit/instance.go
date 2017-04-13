@@ -4,15 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"os"
 	"path"
 
 	log "github.com/Sirupsen/logrus"
-
 	"github.com/docker/hyperkit/go"
-
 	"github.com/docker/infrakit/pkg/spi/instance"
 	"github.com/docker/infrakit/pkg/types"
+	"github.com/rneugeba/iso9660wrap"
 )
 
 // NewHyperKitPlugin creates an instance plugin for hyperkit.
@@ -20,6 +20,7 @@ func NewHyperKitPlugin(vmDir, hyperkit, vpnkitSock string) instance.Plugin {
 	return &hyperkitPlugin{VMDir: vmDir,
 		HyperKit:   hyperkit,
 		VPNKitSock: vpnkitSock,
+		DiskDir:    path.Join(vmDir, "disks"),
 	}
 }
 
@@ -32,6 +33,9 @@ type hyperkitPlugin struct {
 
 	// VPNKitSock is the path to the VPNKit Unix domain socket.
 	VPNKitSock string
+
+	// DiskDir is the path to persistent (across reboots) disk images
+	DiskDir string
 }
 
 // Validate performs local validation on a provision request.
@@ -50,8 +54,8 @@ func (p hyperkitPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 		}
 	}
 
-	if properties["Moby"] == nil {
-		return nil, errors.New("Property 'Moby' must be set")
+	if properties["kernel+initrd"] == nil {
+		return nil, errors.New("Property 'kernel+initrd' must be set")
 	}
 	if properties["CPUs"] == nil {
 		properties["CPUs"] = 1
@@ -59,8 +63,9 @@ func (p hyperkitPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 	if properties["Memory"] == nil {
 		properties["Memory"] = 512
 	}
-	if properties["Disk"] == nil {
-		properties["Disk"] = 256
+	diskSize := 0
+	if properties["Disk"] != nil {
+		diskSize = int(properties["Disk"].(float64))
 	}
 
 	instanceDir, err := ioutil.TempDir(p.VMDir, "infrakit-")
@@ -68,30 +73,83 @@ func (p hyperkitPlugin) Provision(spec instance.Spec) (*instance.ID, error) {
 		return nil, err
 	}
 	id := instance.ID(path.Base(instanceDir))
+	log.Infof("[%s] New instance", id)
+
+	logicalID := string(id)
+	uuidStr := ""
+
+	diskImage := ""
+	if spec.LogicalID != nil {
+		logicalID = string(*spec.LogicalID)
+		// The LogicalID may be a IP address. If so, translate
+		// it into a magic UUID which cause VPNKit to assign a
+		// fixed IP address
+		if ip := net.ParseIP(logicalID); len(ip) > 0 {
+			uuid := make([]byte, 16)
+			uuid[12] = ip.To4()[0]
+			uuid[13] = ip.To4()[1]
+			uuid[14] = ip.To4()[2]
+			uuid[15] = ip.To4()[3]
+			uuidStr = fmt.Sprintf("%x-%x-%x-%x-%x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:])
+		}
+		// If a LogicalID is supplied and the Disk size is
+		// non-zero, we place the disk in a special directory
+		// so it persists across reboots.
+		if diskSize != 0 {
+			diskImage = path.Join(p.DiskDir, logicalID+".img")
+		}
+	}
+
+	isoImage := ""
+	if spec.Init != "" {
+		isoImage = path.Join(instanceDir, "data.iso")
+		outfh, err := os.OpenFile(isoImage, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("Cannot create user data ISO: %s", err)
+		}
+		err = iso9660wrap.WriteBuffer(outfh, []byte(spec.Init), "config")
+		if err != nil {
+			log.Fatalf("Cannot write user data ISO: %s", err)
+		}
+		outfh.Close()
+	}
+
+	log.Infof("[%s] LogicalID: %s", id, logicalID)
+	log.Debugf("[%s] UUID: %s", id, uuidStr)
 
 	// Start a HyperKit instance
-	h, err := hyperkit.New(p.HyperKit, instanceDir, p.VPNKitSock, "")
+	h, err := hyperkit.New(p.HyperKit, p.VPNKitSock, instanceDir)
 	if err != nil {
 		return nil, err
 	}
-	h.Kernel = properties["Moby"].(string) + "-bzImage"
-	h.Initrd = properties["Moby"].(string) + "-initrd.img"
+	h.Kernel = properties["kernel+initrd"].(string) + "-bzImage"
+	h.Initrd = properties["kernel+initrd"].(string) + "-initrd.img"
+	h.UUID = uuidStr
+	h.DiskImage = diskImage
+	h.ISOImage = isoImage
 	h.CPUs = int(properties["CPUs"].(float64))
 	h.Memory = int(properties["Memory"].(float64))
-	h.DiskSize = int(properties["Disk"].(float64))
-	h.UserData = spec.Init
+	h.DiskSize = diskSize
 	h.Console = hyperkit.ConsoleFile
+	log.Infof("[%s] Booting: %s/%s", id, h.Kernel, h.Initrd)
+	log.Infof("[%s] %d CPUs, %dMB Memory, %dMB Disk (%s)", id, h.CPUs, h.Memory, h.DiskSize, h.DiskImage)
+
 	err = h.Start("console=ttyS0")
 	if err != nil {
 		return nil, err
 	}
-	log.Info("Started new VM: ", id)
+	log.Infof("[%s] Started", id)
+
+	if err := ioutil.WriteFile(path.Join(instanceDir, "logical.id"), []byte(logicalID), 0644); err != nil {
+		return nil, err
+	}
 
 	tagData, err := types.AnyValue(spec.Tags)
 	if err != nil {
 		return nil, err
 	}
 
+	log.Debugf("[%s] tags: %s", id, tagData)
 	if err := ioutil.WriteFile(path.Join(instanceDir, "tags"), tagData.Bytes(), 0644); err != nil {
 		return nil, err
 	}
@@ -153,7 +211,7 @@ func (p hyperkitPlugin) Destroy(id instance.ID) error {
 }
 
 // DescribeInstances returns descriptions of all instances matching all of the provided tags.
-func (p hyperkitPlugin) DescribeInstances(tags map[string]string) ([]instance.Description, error) {
+func (p hyperkitPlugin) DescribeInstances(tags map[string]string, properties bool) ([]instance.Description, error) {
 	files, err := ioutil.ReadDir(p.VMDir)
 	if err != nil {
 		return nil, err
@@ -206,7 +264,14 @@ func (p hyperkitPlugin) DescribeInstances(tags map[string]string) ([]instance.De
 				p.Destroy(id)
 				continue
 			}
-			lid := instance.LogicalID(h.Pid)
+
+			lidData, err := ioutil.ReadFile(path.Join(instanceDir, "logical.id"))
+			if err != nil {
+				log.Warningln("Could not get logical ID. Id: ", id)
+				p.Destroy(id)
+				continue
+			}
+			lid := instance.LogicalID(lidData)
 			logicalID = &lid
 
 			descriptions = append(descriptions, instance.Description{

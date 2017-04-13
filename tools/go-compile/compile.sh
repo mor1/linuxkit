@@ -26,6 +26,10 @@ do
 		package="$2"
 		shift
 	;;
+	--ldflags)
+		ldflags="$2"
+		shift
+	;;
 	*)
 		echo "Unknown option $1"
 		exit 1
@@ -57,13 +61,21 @@ test -z $(GOOS=linux go tool vet -printf=false . 2>&1 | grep -v vendor/ | tee /d
 >&2 echo "golint..."
 test -z $(find . -type f -name "*.go" -not -path "*/vendor/*" -not -name "*.pb.*" -exec golint {} \; | tee /dev/stderr)
 
+>&2 echo "ineffassign..."
+test -z $(find . -type f -name "*.go" -not -path "*/vendor/*" -not -name "*.pb.*" -exec ineffassign {} \; | tee /dev/stderr)
+
 >&2 echo "go build..."
 
 if [ "$GOOS" = "darwin" ]
 then
-	go build -o $out "$package"
+	if [ -z "$ldflags" ]
+	then
+		go build -o $out "$package"
+	else
+		go build -o $out -ldflags "${ldflags}" "$package"
+	fi
 else
-	go build -o $out -buildmode pie --ldflags '-s -w -extldflags "-static"' "$package"
+	go build -o $out -buildmode pie -ldflags "-s -w ${ldflags} -extldflags \"-static\"" "$package"
 fi
 
 tar cf - $out

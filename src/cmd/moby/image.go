@@ -79,7 +79,9 @@ func tarPrefix(path string, tw *tar.Writer) error {
 			Mode:     0755,
 			Typeflag: tar.TypeDir,
 		}
-		tw.WriteHeader(hdr)
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
 		mkdir = mkdir + "/"
 	}
 	return nil
@@ -118,21 +120,37 @@ func imageTar(image, prefix string, tw *tar.Writer) error {
 		}
 		if exclude[hdr.Name] {
 			log.Debugf("image tar: %s %s exclude %s", image, prefix, hdr.Name)
-			io.Copy(ioutil.Discard, tr)
+			_, err = io.Copy(ioutil.Discard, tr)
+			if err != nil {
+				return err
+			}
 		} else if replace[hdr.Name] != "" {
 			contents := replace[hdr.Name]
 			hdr.Size = int64(len(contents))
 			hdr.Name = prefix + hdr.Name
 			log.Debugf("image tar: %s %s add %s", image, prefix, hdr.Name)
-			tw.WriteHeader(hdr)
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
 			buf := bytes.NewBufferString(contents)
-			io.Copy(tw, buf)
-			io.Copy(ioutil.Discard, tr)
+			_, err = io.Copy(tw, buf)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(ioutil.Discard, tr)
+			if err != nil {
+				return err
+			}
 		} else {
 			log.Debugf("image tar: %s %s add %s", image, prefix, hdr.Name)
 			hdr.Name = prefix + hdr.Name
-			tw.WriteHeader(hdr)
-			io.Copy(tw, tr)
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			_, err = io.Copy(tw, tr)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	err = tw.Close()
@@ -143,8 +161,8 @@ func imageTar(image, prefix string, tw *tar.Writer) error {
 }
 
 // ImageBundle produces an OCI bundle at the given path in a tarball, given an image and a config.json
-func ImageBundle(path, image, config string) ([]byte, error) {
-	log.Debugf("image bundle: %s %s cfg: %s", path, image, config)
+func ImageBundle(path string, image string, config []byte) ([]byte, error) {
+	log.Debugf("image bundle: %s %s cfg: %s", path, image, string(config))
 	out := new(bytes.Buffer)
 	tw := tar.NewWriter(out)
 	err := tarPrefix(path+"/rootfs/", tw)
@@ -160,7 +178,7 @@ func ImageBundle(path, image, config string) ([]byte, error) {
 	if err != nil {
 		return []byte{}, err
 	}
-	buf := bytes.NewBufferString(config)
+	buf := bytes.NewBuffer(config)
 	_, err = io.Copy(tw, buf)
 	if err != nil {
 		return []byte{}, err

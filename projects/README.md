@@ -16,6 +16,8 @@ If you want to create a project, please submit a pull request to create a new di
 - [OKernel](okernel/) intra-kernel protection using EPT (HPE)
 - [eBPF](ebpf/) iovisor eBPF tools
 - [AWS](aws/) AWS build support
+- [Swarmd](swarmd) Standalone swarmkit based orchestrator
+- [Landlock LSM](landlock/) programmatic access control
 
 ## Current projects not yet documented
 - Clear Linux integration (Intel)

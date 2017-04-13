@@ -3,44 +3,65 @@ open Lwt.Infix
 let src = Logs.Src.create "IO" ~doc:"IO helpers"
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let rec really_write fd buf off len =
-  Log.debug (fun l -> l "really_write");
-  match len with
-  | 0   -> Lwt.return_unit
-  | len ->
-    Lwt_unix.write fd buf off len >>= fun n ->
-    really_write fd buf (off+n) (len-n)
+(* from mirage-conduit. FIXME: move to mirage-flow *)
+type 'a io = 'a Lwt.t
+type buffer = Cstruct.t
+type error = [`Msg of string]
+type write_error = [ Mirage_flow.write_error | error ]
+let pp_error ppf (`Msg s) = Fmt.string ppf s
 
-let rec really_read fd buf off len =
-  Log.debug (fun l -> l "really_read");
-  match len with
-  | 0   -> Lwt.return_unit
-  | len ->
-    Lwt_unix.read fd buf off len >>= fun n ->
-    really_read fd buf (off+n) (len-n)
+let pp_write_error ppf = function
+  | #Mirage_flow.write_error as e -> Mirage_flow.pp_write_error ppf e
+  | #error as e                   -> pp_error ppf e
 
-let read_all fd =
-  Log.debug (fun l -> l "read_all");
-  let len = 16 * 1024 in
-  let buf = Bytes.create len in
-  let rec loop acc =
-    Lwt_unix.read fd buf 0 len >>= fun n ->
-    let acc = String.sub buf 0 n :: acc in
-    if n <= len then Lwt.return (List.rev acc)
-    else loop acc
+type flow =
+  | Flow: string
+          * (module Mirage_flow_lwt.CONCRETE with type flow = 'a)
+          * 'a
+    -> flow
+
+let create (type a) (module M: Mirage_flow_lwt.S with type flow = a) t name =
+  let m =
+    (module Mirage_flow_lwt.Concrete(M):
+       Mirage_flow_lwt.CONCRETE with type flow = a)
   in
-  loop [] >|= fun bufs ->
-  String.concat "" bufs
+  Flow (name, m , t)
 
-let read_n fd len =
-  Log.debug (fun l -> l "read_n");
-  let buf = Bytes.create len in
-  let rec loop acc len =
-    Lwt_unix.read fd buf 0 len >>= fun n ->
-    let acc = String.sub buf 0 n :: acc in
-    match len - n with
-    | 0 -> Lwt.return (List.rev acc)
-    | r -> loop acc r
+let read (Flow (_, (module F), flow)) = F.read flow
+let write (Flow (_, (module F), flow)) b = F.write flow b
+let writev (Flow (_, (module F), flow)) b = F.writev flow b
+let close (Flow (_, (module F), flow)) = F.close flow
+let pp ppf (Flow (name, _, _)) = Fmt.string ppf name
+
+type t = flow
+
+let forward ?(verbose=false) ~src ~dst =
+  let rec loop () =
+    read src >>= function
+    | Ok `Eof ->
+      Log.err (fun l -> l "forward[%a => %a] EOF" pp src pp dst);
+      Lwt.return_unit
+    | Error e ->
+      Log.err (fun l -> l "forward[%a => %a] %a" pp src pp dst pp_error e);
+      Lwt.return_unit
+    | Ok (`Data buf) ->
+      Log.debug (fun l ->
+          let payload =
+            if verbose then Fmt.strf "[%S]" @@ Cstruct.to_string buf
+            else Fmt.strf "%d bytes" (Cstruct.len buf)
+          in
+          l "forward[%a => %a] %s" pp src pp dst payload);
+      write dst buf >>= function
+      | Ok ()   -> loop ()
+      | Error e ->
+        Log.err (fun l -> l "forward[%a => %a] %a"
+                    pp src pp dst pp_write_error e);
+        Lwt.return_unit
   in
-  loop [] len >|= fun bufs ->
-  String.concat "" bufs
+  loop ()
+
+let proxy ?verbose f1 f2 =
+  Lwt.join [
+    forward ?verbose ~src:f1 ~dst:f2;
+    forward ?verbose ~src:f2 ~dst:f1;
+  ]

@@ -1,0 +1,28 @@
+kernel:
+  image: "mobylinux/kernel-landlock:4.9.x"
+  cmdline: "console=ttyS0 page_poison=1"
+init:
+  - mobylinux/init:8375addb923b8b88b2209740309c92aa5f2a4f9d
+  - mobylinux/runc:b0fb122e10dbb7e4e45115177a61a3f8d68c19a9
+  - mobylinux/containerd:18eaf72f3f4f9a9f29ca1951f66df701f873060b
+  - mobylinux/ca-certificates:eabc5a6e59f05aa91529d80e9a595b85b046f935
+onboot:
+  - name: sysctl
+    image: "mobylinux/sysctl:2cf2f9d5b4d314ba1bfc22b2fe931924af666d8c"
+    net: host
+    pid: host
+    ipc: host
+    capabilities:
+     - CAP_SYS_ADMIN
+    readonly: true
+services:
+  - name: rngd
+    image: "mobylinux/rngd:3dad6dd43270fa632ac031e99d1947f20b22eec9"
+    capabilities:
+     - CAP_SYS_ADMIN
+    oomScoreAdj: -800
+    readonly: true
+outputs:
+  - format: kernel+initrd
+  - format: iso-bios
+  - format: iso-efi
